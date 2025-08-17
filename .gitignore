@@ -1,0 +1,55 @@
+# --- Python / Virtualenv ---
+*.pyc
+__pycache__/
+*.pyo
+*.pyd
+*.swp
+*.tmp
+*.log
+
+# Virtual environment
+.venv/
+venv/
+ENV/
+
+# IDE / Editor
+.vscode/
+.idea/
+*.code-workspace
+
+# Django / Application
+*.sqlite3
+*.mp4
+*.jpg
+/media/videos/*
+/media/frames/*
+!media/videos/.gitkeep
+!media/frames/.gitkeep
+static/
+
+# Migrations auto (garder si versionnées voulu)
+# Commenter la ligne suivante si vous voulez suivre les migrations
+# observations/migrations/
+
+# Models / ONNX / poids volumineux
+birdwatch_server/ml_models/*.onnx
+
+# Cache / coverage / test
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.mypy_cache/
+.cache/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs erreurs client
+errors/*.html
+
+# Build / dist
+build/
+dist/
+*.egg-info/
