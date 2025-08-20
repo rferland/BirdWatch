@@ -1,4 +1,21 @@
+from __future__ import annotations
+
 from django.db import models
+
+
+class ObservationQuerySet(models.QuerySet["Observation"]):
+    def recent(self):
+        return self.order_by("-created_at")
+
+
+class ObservationManager(models.Manager["Observation"]):
+    def get_queryset(self):  # type: ignore[override]
+        return ObservationQuerySet(self.model, using=self._db)
+
+    # Expose helper directly on manager
+    def recent(self):  # noqa: D401 - simple proxy
+        """Return observations ordered from newest to oldest."""
+        return self.get_queryset().recent()
 
 
 class Observation(models.Model):
@@ -21,6 +38,9 @@ class Observation(models.Model):
     confidence = models.FloatField(null=True, blank=True)
     frame_image = models.ImageField(upload_to="frames/", null=True, blank=True)
     notes = models.TextField(blank=True)
+
+    # Explicit manager (helps static analysis & custom helpers)
+    objects: ObservationManager = ObservationManager()
 
     def __str__(self):
         return f"{self.created_at} - {self.bird_species} ({self.confidence or 0:.2f})"
