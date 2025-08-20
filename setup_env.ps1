@@ -14,7 +14,7 @@ if ($IsWindows) {
     else {
         Write-Host "Erreur: $venvPath introuvable."
         exit 1
-    }
+    }install --upgrade pip
 }
 else {
     # Linux: utilise le chemin relatif
