@@ -1,5 +1,50 @@
 from __future__ import annotations
+import random
+import time
+from django.http import JsonResponse
 
+# API qui retourne la bounding box de l'oiseau détecté (exemple statique)
+
+import requests
+from django.http import StreamingHttpResponse, HttpResponse
+from django.views.decorators.http import require_GET
+import threading
+import queue
+
+# Vue de redirection de / vers /api/index/
+from django.shortcuts import redirect
+
+
+import os
+import json
+
+
+def bird_box(request):
+    path = os.path.join(os.path.dirname(__file__), "../ml_models/last_bird_box.json")
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            box = json.load(f)
+        return JsonResponse(box)
+    except Exception as e:
+        return JsonResponse({"error": str(e)}, status=500)
+
+
+# Vue de redirection de / vers /api/index/
+
+
+def root_redirect(request):
+    return redirect("index")
+
+
+# Vue pour afficher la page index.html
+from django.shortcuts import render
+
+
+def index(request):
+    return render(request, "observations/index.html")
+
+
+# --- Vue proxy pour relayer le flux MJPEG de l'ESP32 ---
 from collections import defaultdict
 from dataclasses import dataclass
 from typing import List
@@ -8,6 +53,96 @@ from django.http import HttpRequest, HttpResponse
 from django.shortcuts import render
 from django.utils.dateparse import parse_date
 from .models import Observation
+
+
+# --- MJPEG Proxy mémoire pour multi-clients ---
+ESP32_STREAM_URL = "http://10.0.0.76:81/stream"
+_mjpeg_clients = []  # List of queues for each client
+_mjpeg_lock = threading.Lock()
+
+
+def _mjpeg_proxy_worker():
+    print("[MJPEG Proxy] Thread démarré")
+    while True:
+        try:
+            resp = requests.get(ESP32_STREAM_URL, stream=True, timeout=5)
+            if resp.status_code != 200:
+                print(f"[MJPEG Proxy] Erreur HTTP: {resp.status_code}")
+                time.sleep(2)
+                continue
+            boundary = None
+            ctype = resp.headers.get("Content-Type", "")
+            if "boundary=" in ctype:
+                boundary = ctype.split("boundary=")[-1]
+            if not boundary:
+                print("[MJPEG Proxy] Pas de boundary trouvé")
+                time.sleep(2)
+                continue
+            boundary = boundary.encode()
+            buf = b""
+            for chunk in resp.iter_content(chunk_size=4096):
+                buf += chunk
+                while True:
+                    start = buf.find(b"--" + boundary)
+                    if start == -1:
+                        break
+                    end = buf.find(b"--" + boundary, start + len(boundary) + 2)
+                    if end == -1:
+                        break
+                    part = buf[start:end]
+                    buf = buf[end:]
+                    # Distribue à tous les clients
+                    with _mjpeg_lock:
+                        for q in _mjpeg_clients:
+                            try:
+                                q.put(part, block=False)
+                            except queue.Full:
+                                pass
+        except Exception as e:
+            print(f"[MJPEG Proxy] Erreur: {e}")
+            time.sleep(2)
+
+
+# Lance le thread proxy au premier import
+if not hasattr(globals(), "_mjpeg_proxy_started"):
+    t = threading.Thread(target=_mjpeg_proxy_worker, daemon=True)
+    t.start()
+    globals()["_mjpeg_proxy_started"] = True
+
+
+@require_GET
+def proxy_stream(request):
+    # Chaque client reçoit sa propre file de frames (JPEG purs)
+    q = queue.Queue(maxsize=20)
+    with _mjpeg_lock:
+        _mjpeg_clients.append(q)
+
+    def gen():
+        try:
+            while True:
+                part = q.get(timeout=10)
+                # Extrait le JPEG du part (recherche des marqueurs JPEG)
+                start = part.find(b"\xff\xd8")
+                end = part.find(b"\xff\xd9")
+                if start != -1 and end != -1:
+                    jpeg = part[start : end + 2]
+                    yield (
+                        b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: "
+                        + str(len(jpeg)).encode()
+                        + b"\r\n\r\n"
+                        + jpeg
+                        + b"\r\n"
+                    )
+        except Exception:
+            pass
+        finally:
+            with _mjpeg_lock:
+                if q in _mjpeg_clients:
+                    _mjpeg_clients.remove(q)
+
+    return StreamingHttpResponse(
+        gen(), content_type="multipart/x-mixed-replace; boundary=frame"
+    )
 
 
 @dataclass

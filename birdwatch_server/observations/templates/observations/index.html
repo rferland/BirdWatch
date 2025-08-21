@@ -1,0 +1,122 @@
+{% extends "observations/master.html" %} {% block title %}Flux caméra ESP32
+{%endblock %} {% block content %}
+<div class="container mt-4">
+  <h2>Flux caméra ESP32</h2>
+   <div class="mb-3">
+     <label for="res-select" class="form-label">Résolution de capture :</label>
+     <select id="res-select" class="form-select" style="width:auto; display:inline-block;">
+       <option value="5">320x240</option>
+       <option value="6">640x480</option>
+       <option value="10">1280x720</option>
+     </select>
+     <button id="capture-btn" class="btn btn-primary ms-2">Capturer</button>
+   </div>
+   <div id="stream-container" style="position: relative; display: inline-block">
+    <img
+      id="esp32-stream"
+      src="/api/proxy-stream/"
+      class="img-fluid w-100 border"
+      alt="Flux ESP32"
+      onerror="showError()"
+      style="display: block; height: auto"
+    />
+    <canvas
+      id="bird-canvas"
+      style="position: absolute; left: 0; top: 0; pointer-events: none"
+    ></canvas>
+     <div
+       id="error-message"
+       class="alert alert-danger mt-3"
+       style="display: none"
+     >
+       Connexion au flux impossible. Vérifiez que l'ESP32 est en ligne.
+     </div>
+   </div>
+   <div class="mt-4">
+     <img id="capture-img" src="" alt="Image capturée" style="max-width:200%; display:none; border:2px solid #007bff;" />
+   </div>
+  </div>
+</div>
+<script>
+
+ // --- Capture image à résolution choisie ---
+ const captureBtn = document.getElementById('capture-btn');
+ const resSelect = document.getElementById('res-select');
+ const captureImg = document.getElementById('capture-img');
+
+ captureBtn.onclick = async function() {
+   const val = resSelect.value;
+   // 1. Change la résolution sur l'ESP32
+   try {
+     fetch('http://10.0.0.76:81/control?var=framesize&val=' + val);
+     // 2. Attend un peu que la cam s'ajuste
+     await new Promise(r => setTimeout(r, 500));
+     // 3. Demande la capture
+     const resp = fetch('http://10.0.0.76:81/capture');
+     // 4. Affiche l'image capturée
+     captureImg.src = 'http://10.0.0.76:81/capture?_t=' + Date.now();
+     captureImg.style.display = '';
+   } catch (e) {
+     alert("Erreur lors de la capture : " + e);
+   }
+ }
+
+  function showError() {
+    document.getElementById("esp32-stream").style.display = "none";
+    document.getElementById("error-message").style.display = "block";
+  }
+  // Tentative de rechargement toutes les 5 secondes si erreur
+  setInterval(function () {
+    var img = document.getElementById("esp32-stream");
+    if (img.style.display === "none") {
+      img.src = "/api/proxy-stream/?_t=" + Date.now();
+      img.style.display = "";
+      document.getElementById("error-message").style.display = "none";
+    }
+  }, 5000);
+
+  // --- Canvas pour bounding box ---
+  const img = document.getElementById("esp32-stream");
+  const canvas = document.getElementById("bird-canvas");
+  function resizeCanvas() {
+    canvas.width = img.clientWidth;
+    canvas.height = img.clientHeight;
+  }
+  img.onload = resizeCanvas;
+  window.addEventListener("resize", resizeCanvas);
+
+  function drawBox(box) {
+    resizeCanvas();
+    const ctx = canvas.getContext("2d");
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    if (box) {
+      // Adapter les coordonnées si l'image est redimensionnée
+      const scaleX = img.clientWidth / 640; // largeur ESP32
+      const scaleY = img.clientHeight / 480; // hauteur ESP32
+      ctx.strokeStyle = "red";
+      ctx.lineWidth = 3;
+      ctx.strokeRect(
+        box.x * scaleX,
+        box.y * scaleY,
+        box.w * scaleX,
+        box.h * scaleY
+      );
+    }
+  }
+
+  async function fetchBoxAndDraw() {
+    try {
+      const resp = await fetch("/api/bird-box/");
+      if (resp.ok) {
+        const box = await resp.json();
+        drawBox(box);
+      } else {
+        drawBox(null);
+      }
+    } catch (e) {
+      drawBox(null);
+    }
+  }
+  setInterval(fetchBoxAndDraw, 500); // 2x/sec
+</script>
+{% endblock %}

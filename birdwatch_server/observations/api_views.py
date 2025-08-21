@@ -146,14 +146,8 @@ def stream_status(request: HttpRequest):  # pylint: disable=unused-argument
 def live_stream_page(
     request: HttpRequest,
 ):  # HTML page embedding MJPEG + status  # pylint: disable=unused-argument
-    return HttpResponse(
-        """<!DOCTYPE html><html lang='fr'><head><meta charset='utf-8'><title>Live Stream</title>
-<style>body{background:#0d1117;color:#e6edf3;font-family:Arial;margin:0;padding:1rem}h1{margin-top:0}#wrap{display:flex;gap:1rem;align-items:flex-start}#panel{max-width:320px}img{border:1px solid #30363d;border-radius:4px;max-width:100%;height:auto;background:#000}</style>
-</head><body><h1>Flux temps réel</h1><div id='wrap'><div><img id='stream' src='/api/stream/live' alt='flux' /></div><div id='panel'><div id='fps'>FPS: ?</div><div id='last'>Dernière frame: --</div><p>Source: /api/stream/live<br/>Status: /api/stream/status</p></div></div>
-<script>async function refresh(){try{const r=await fetch('/api/stream/status');if(!r.ok)return;const j=await r.json();document.getElementById('fps').textContent='FPS approx: '+(j.fps_approx||0).toFixed(2);document.getElementById('last').textContent='Dernière maj: '+new Date().toLocaleTimeString();}catch(e){}}setInterval(refresh,1500);</script>
-</body></html>""",
-        content_type="text/html; charset=utf-8",
-    )
+    from django.shortcuts import render
+    return render(request, "observations/live_stream.html")
 
 
 urlpatterns_api += [

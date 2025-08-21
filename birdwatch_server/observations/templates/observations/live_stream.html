@@ -1,0 +1,26 @@
+{% extends "observations/master.html" %} {% block title %}Flux temps réel{%
+endblock %} {% block header %}Flux temps réel{% endblock %} {% block content %}
+<div id="wrap">
+  <div><img id="stream" src="/api/stream/live" alt="flux" /></div>
+  <div id="panel">
+    <div id="fps">FPS: ?</div>
+    <div id="last">Dernière frame: --</div>
+    <p>Source: /api/stream/live<br />Status: /api/stream/status</p>
+  </div>
+</div>
+{% endblock %} {% block extra_js %}
+<script>
+  async function refresh() {
+    try {
+      const r = await fetch("/api/stream/status");
+      if (!r.ok) return;
+      const j = await r.json();
+      document.getElementById("fps").textContent =
+        "FPS approx: " + (j.fps_approx || 0).toFixed(2);
+      document.getElementById("last").textContent =
+        "Dernière maj: " + new Date().toLocaleTimeString();
+    } catch (e) {}
+  }
+  setInterval(refresh, 1500);
+</script>
+{% endblock %}
