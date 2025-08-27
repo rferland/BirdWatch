@@ -1,10 +1,26 @@
+#define ENABLE_VL53L1X 1 // Mettre à 0 pour désactiver le capteur VL53L1X
+#if ENABLE_VL53L1X
+#include "vl53l1x_sleep.h"
+#endif
 #include "esp_camera.h"
 #include <WiFi.h>
+#include <Wire.h>
 
 // ===========================
 // Select camera model in board_config.h
 // ===========================
 #include "board_config.h"
+
+#include <Wire.h>
+#include "VL53L1X_ULD.h" // Fichiers ST : VL53L1X_api.c/.h et VL53L1X_platform.c/.h doivent être ajoutés au projet
+
+// ===========================
+// VL53L1X
+// ===========================
+#define I2C_SDA 14
+#define I2C_SCL 15
+#define VL53L1X_I2C_ADDR 0x52       // Adresse par défaut du VL53L1X
+#define VL53L1X_INT_PIN GPIO_NUM_13 // GPIO1 du VL53L1X → GPIO13 ESP32
 
 // ===========================
 // Enter your WiFi credentials
@@ -15,10 +31,15 @@ const char *password = "4186283132";
 void startCameraServer();
 void setupLedFlash();
 
-void setup() {
+void setup()
+{
   Serial.begin(115200);
   Serial.setDebugOutput(true);
   Serial.println();
+
+  // ===========================
+  // Setup de la caméra et du serveur
+  // ===========================
 
   camera_config_t config;
   config.ledc_channel = LEDC_CHANNEL_0;
@@ -41,8 +62,8 @@ void setup() {
   config.pin_reset = RESET_GPIO_NUM;
   config.xclk_freq_hz = 20000000;
   config.frame_size = FRAMESIZE_UXGA;
-  config.pixel_format = PIXFORMAT_JPEG;  // for streaming
-  //config.pixel_format = PIXFORMAT_RGB565; // for face detection/recognition
+  config.pixel_format = PIXFORMAT_JPEG; // for streaming
+  // config.pixel_format = PIXFORMAT_RGB565; // for face detection/recognition
   config.grab_mode = CAMERA_GRAB_WHEN_EMPTY;
   config.fb_location = CAMERA_FB_IN_PSRAM;
   config.jpeg_quality = 12;
@@ -50,17 +71,23 @@ void setup() {
 
   // if PSRAM IC present, init with UXGA resolution and higher JPEG quality
   //                      for larger pre-allocated frame buffer.
-  if (config.pixel_format == PIXFORMAT_JPEG) {
-    if (psramFound()) {
+  if (config.pixel_format == PIXFORMAT_JPEG)
+  {
+    if (psramFound())
+    {
       config.jpeg_quality = 10;
       config.fb_count = 2;
       config.grab_mode = CAMERA_GRAB_LATEST;
-    } else {
+    }
+    else
+    {
       // Limit the frame size when PSRAM is not available
       config.frame_size = FRAMESIZE_SVGA;
       config.fb_location = CAMERA_FB_IN_DRAM;
     }
-  } else {
+  }
+  else
+  {
     // Best option for face detection/recognition
     config.frame_size = FRAMESIZE_240X240;
 #if CONFIG_IDF_TARGET_ESP32S3
@@ -76,20 +103,23 @@ void setup() {
   Serial.println(psramFound() ? "PSRAM OK" : "PSRAM ABSENTE");
   // camera init
   esp_err_t err = esp_camera_init(&config);
-  if (err != ESP_OK) {
+  if (err != ESP_OK)
+  {
     Serial.printf("Camera init failed with error 0x%x", err);
     return;
   }
 
   sensor_t *s = esp_camera_sensor_get();
   // initial sensors are flipped vertically and colors are a bit saturated
-  if (s->id.PID == OV3660_PID) {
-    s->set_vflip(s, 1);        // flip it back
-    s->set_brightness(s, 1);   // up the brightness just a bit
-    s->set_saturation(s, -2);  // lower the saturation
+  if (s->id.PID == OV3660_PID)
+  {
+    s->set_vflip(s, 1);       // flip it back
+    s->set_brightness(s, 1);  // up the brightness just a bit
+    s->set_saturation(s, -2); // lower the saturation
   }
   // drop down frame size for higher initial frame rate
-  if (config.pixel_format == PIXFORMAT_JPEG) {
+  if (config.pixel_format == PIXFORMAT_JPEG)
+  {
     s->set_framesize(s, FRAMESIZE_VGA);
   }
 
@@ -111,7 +141,8 @@ void setup() {
   WiFi.setSleep(false);
 
   Serial.print("WiFi connecting");
-  while (WiFi.status() != WL_CONNECTED) {
+  while (WiFi.status() != WL_CONNECTED)
+  {
     delay(500);
     Serial.print(".");
   }
@@ -123,9 +154,17 @@ void setup() {
   Serial.print("Camera Ready! Use 'http://");
   Serial.print(WiFi.localIP());
   Serial.println("' to connect");
+
+  // ===========================
+// VL53L1X (optionnel)
+// ===========================
+#if ENABLE_VL53L1X
+  setupVL53L1XAndSleep();
+#endif
+  // Deep sleep déjà géré dans setupVL53L1XAndSleep()
 }
 
-void loop() {
+void loop()
+{
   // Do nothing. Everything is done in another task by the web server
-  delay(10000);
 }
