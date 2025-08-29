@@ -1,4 +1,4 @@
-#define ENABLE_VL53L1X 1 // Mettre à 0 pour désactiver le capteur VL53L1X
+#define ENABLE_VL53L1X 0 // Mettre à 0 pour désactiver le capteur VL53L1X
 #if ENABLE_VL53L1X
 #include "vl53l1x_sleep.h"
 #endif
@@ -23,10 +23,14 @@
 #define VL53L1X_INT_PIN GPIO_NUM_13 // GPIO1 du VL53L1X → GPIO13 ESP32
 
 // ===========================
-// Enter your WiFi credentials
+// WiFi credentials (chargés dynamiquement)
 // ===========================
-const char *ssid = "NewWiFi";
-const char *password = "4186283132";
+#include "config_utils.h"
+#include <LittleFS.h>
+#include <ArduinoJson.h>
+
+char ssid[64] = "";
+char password[64] = "";
 
 void startCameraServer();
 void setupLedFlash();
@@ -101,6 +105,31 @@ void setup()
 #endif
 
   Serial.println(psramFound() ? "PSRAM OK" : "PSRAM ABSENTE");
+
+  // Initialisation LittleFS
+  if (!LittleFS.begin(true))
+  {
+    Serial.println("Erreur LittleFS: impossible de monter le système de fichiers");
+    return;
+  }
+
+  // Lecture de la config WiFi depuis /config.json
+  StaticJsonDocument<512> doc;
+  if (loadConfig(doc))
+  {
+    const char *s = doc["ssid"] | "";
+    const char *p = doc["password"] | "";
+    strncpy(ssid, s, sizeof(ssid) - 1);
+    strncpy(password, p, sizeof(password) - 1);
+    ssid[sizeof(ssid) - 1] = 0;
+    password[sizeof(password) - 1] = 0;
+    Serial.printf("Config WiFi chargée: ssid='%s'\n", ssid);
+  }
+  else
+  {
+    Serial.println("Aucune config WiFi trouvée, ssid/password vides");
+  }
+
   // camera init
   esp_err_t err = esp_camera_init(&config);
   if (err != ESP_OK)
@@ -138,16 +167,46 @@ void setup()
 #endif
 
   WiFi.begin(ssid, password);
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(ssid, password);
   WiFi.setSleep(false);
 
   Serial.print("WiFi connecting");
-  while (WiFi.status() != WL_CONNECTED)
+  int wifi_attempts = 0;
+  while (WiFi.status() != WL_CONNECTED && wifi_attempts < 40) // 20s max
   {
     delay(500);
     Serial.print(".");
+    wifi_attempts++;
   }
-  Serial.println("");
-  Serial.println("WiFi connected");
+  if (WiFi.status() == WL_CONNECTED)
+  {
+    Serial.println("");
+    Serial.println("WiFi connected");
+  }
+  else
+  {
+    Serial.println("");
+    Serial.println("WiFi non connecté (timeout), passage en mode Access Point");
+    WiFi.disconnect(true);
+    delay(1000);
+    WiFi.mode(WIFI_AP);
+    const char *ap_ssid = "BirdCam_Config";
+    const char *ap_password = ""; // Pas de mot de passe pour config facile
+    bool ap_ok = WiFi.softAP(ap_ssid, ap_password);
+    if (ap_ok)
+    {
+      Serial.print("Point d'accès actif: SSID=");
+      Serial.println(ap_ssid);
+      Serial.print("IP: ");
+      Serial.println(WiFi.softAPIP());
+    }
+    else
+    {
+      Serial.println("Echec démarrage AP");
+    }
+  }
+  Serial.println("WiFi non connecté (timeout)");
 
   startCameraServer();
 

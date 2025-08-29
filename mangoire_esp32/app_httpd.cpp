@@ -1,3 +1,84 @@
+#include <Arduino.h>
+#include "esp_http_server.h"
+#include "esp_timer.h"
+#include "esp_camera.h"
+#include "img_converters.h"
+#include "fb_gfx.h"
+#include "esp32-hal-ledc.h"
+#include "sdkconfig.h"
+#include "camera_index.h"
+
+#include "board_config.h"
+#include "config_utils.h"
+#include <ArduinoJson.h>
+
+// Page HTML de configuration WiFi
+static const char config_html[] = R"rawliteral(
+<!DOCTYPE html>
+<html lang='fr'>
+<head>
+  <meta charset='UTF-8'>
+  <title>Configuration WiFi</title>
+  <meta name='viewport' content='width=device-width,initial-scale=1'>
+  <style>body{font-family:sans-serif;max-width:400px;margin:2em auto;}input,button{font-size:1em;margin:0.5em 0;width:100%;}</style>
+</head>
+<body>
+  <h2>Configurer le WiFi</h2>
+  <form id='wifiForm'>
+    <label>SSID:<input name='ssid' required></label><br>
+    <label>Mot de passe:<input name='password' type='password'></label><br>
+    <button type='submit'>Enregistrer</button>
+  </form>
+  <button id='rebootBtn' style='background:#c00;color:#fff;'>Redémarrer l\'ESP32</button>
+  <div id='msg'></div>
+  <script>
+    const form = document.getElementById('wifiForm');
+    form.onsubmit = async e => {
+      e.preventDefault();
+      const data = {ssid:form.ssid.value,password:form.password.value};
+      const res = await fetch('/api/config', {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify(data)
+      });
+      if(res.ok){
+        document.getElementById('msg').innerHTML = 'Configuration enregistrée. Redémarrez l\'ESP32.';
+      }else{
+        document.getElementById('msg').innerHTML = 'Erreur lors de l\'enregistrement.';
+      }
+    };
+    document.getElementById('rebootBtn').onclick = async () => {
+      if(confirm('Redémarrer l\\'ESP32 ?')){
+        const res = await fetch('/api/reboot', {method:'POST'});
+        if(res.ok){
+          document.getElementById('msg').innerHTML = 'Redémarrage en cours...';
+        }else{
+          document.getElementById('msg').innerHTML = 'Erreur lors du redémarrage.';
+        }
+      }
+    };
+  </script>
+// Handler POST /api/reboot
+static esp_err_t reboot_handler(httpd_req_t *req) {
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+  httpd_resp_sendstr(req, "{\"status\":\"rebooting\"}");
+  delay(200);
+  ESP.restart();
+  return ESP_OK;
+}
+</body>
+</html>
+  )rawliteral";
+
+// Handler GET /config.html
+static esp_err_t config_html_handler(httpd_req_t *req)
+{
+  httpd_resp_set_type(req, "text/html");
+  httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+  httpd_resp_send(req, config_html, strlen(config_html));
+  return ESP_OK;
+}
 // Copyright 2015-2016 Espressif Systems (Shanghai) PTE LTD
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -11,16 +92,55 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-#include <Arduino.h>
-#include "esp_http_server.h"
-#include "esp_timer.h"
-#include "esp_camera.h"
-#include "img_converters.h"
-#include "fb_gfx.h"
-#include "esp32-hal-ledc.h"
-#include "sdkconfig.h"
-#include "camera_index.h"
-#include "board_config.h"
+// Handler pour POST /api/config
+static esp_err_t config_update_handler(httpd_req_t *req)
+{
+  // Limite de 1024 octets pour la config
+  char buf[1025];
+  int total_len = req->content_len;
+  if (total_len > 1024)
+  {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Payload trop gros");
+    return ESP_FAIL;
+  }
+  int ret = httpd_req_recv(req, buf, total_len);
+  if (ret <= 0)
+  {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Lecture échouée");
+    return ESP_FAIL;
+  }
+  buf[ret] = 0;
+
+  StaticJsonDocument<1024> doc;
+  DeserializationError error = deserializeJson(doc, buf);
+  if (error)
+  {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "JSON invalide");
+    return ESP_FAIL;
+  }
+  if (!saveConfig(doc))
+  {
+    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Ecriture de la config échouée");
+    return ESP_FAIL;
+  }
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+  httpd_resp_sendstr(req, "{\"status\":\"ok\"}");
+  return ESP_OK;
+}
+// Enregistrement du endpoint config
+httpd_uri_t config_uri = {
+    .uri = "/api/config",
+    .method = HTTP_POST,
+    .handler = config_update_handler,
+    .user_ctx = NULL
+#ifdef CONFIG_HTTPD_WS_SUPPORT
+    ,
+    .is_websocket = false,
+    .handle_ws_control_frames = false,
+    .supported_subprotocol = NULL
+#endif
+};
 
 #if defined(ARDUINO_ARCH_ESP32) && defined(CONFIG_ARDUHAL_ESP_LOG)
 #include "esp32-hal-log.h"
@@ -807,7 +927,32 @@ static esp_err_t index_handler(httpd_req_t *req)
 }
 
 void startCameraServer()
+    httpd_uri_t reboot_uri = {
+      .uri = "/api/reboot",
+      .method = HTTP_POST,
+      .handler = reboot_handler,
+      .user_ctx = NULL
+#ifdef CONFIG_HTTPD_WS_SUPPORT
+      ,
+      .is_websocket = false,
+      .handle_ws_control_frames = false,
+      .supported_subprotocol = NULL
+#endif
+    };
 {
+  httpd_uri_t config_html_uri = {
+      .uri = "/config.html",
+      .method = HTTP_GET,
+      .handler = config_html_handler,
+      .user_ctx = NULL
+#ifdef CONFIG_HTTPD_WS_SUPPORT
+      ,
+      .is_websocket = false,
+      .handle_ws_control_frames = false,
+      .supported_subprotocol = NULL
+#endif
+  };
+
   httpd_config_t config = HTTPD_DEFAULT_CONFIG();
   config.max_uri_handlers = 16;
   config.max_open_sockets = 4; // Augmente à 4 connexions simultanées (adapte selon ta RAM)
@@ -971,6 +1116,9 @@ void startCameraServer()
     httpd_register_uri_handler(camera_httpd, &greg_uri);
     httpd_register_uri_handler(camera_httpd, &pll_uri);
     httpd_register_uri_handler(camera_httpd, &win_uri);
+    httpd_register_uri_handler(camera_httpd, &config_uri);
+    httpd_register_uri_handler(camera_httpd, &config_html_uri);
+    httpd_register_uri_handler(camera_httpd, &reboot_uri);
   }
 
   config.server_port += 1;
