@@ -112,6 +112,10 @@ void setup()
     Serial.println("Erreur LittleFS: impossible de monter le système de fichiers");
     return;
   }
+  else
+  {
+    Serial.println("LittleFS monté avec succès");
+  }
 
   // Lecture de la config WiFi depuis /config.json
   StaticJsonDocument<512> doc;
@@ -136,6 +140,10 @@ void setup()
   {
     Serial.printf("Camera init failed with error 0x%x", err);
     return;
+  }
+  else
+  {
+    Serial.println("Camera init OK");
   }
 
   sensor_t *s = esp_camera_sensor_get();
@@ -166,6 +174,7 @@ void setup()
   setupLedFlash();
 #endif
 
+  Serial.printf("Tentative connexion WiFi: ssid='%s'\n", ssid);
   WiFi.begin(ssid, password);
   WiFi.mode(WIFI_STA);
   WiFi.begin(ssid, password);
@@ -183,6 +192,10 @@ void setup()
   {
     Serial.println("");
     Serial.println("WiFi connected");
+    startCameraServer();
+    Serial.print("Camera Ready! Use 'http://");
+    Serial.print(WiFi.localIP());
+    Serial.println("' to connect");
   }
   else
   {
@@ -200,19 +213,16 @@ void setup()
       Serial.println(ap_ssid);
       Serial.print("IP: ");
       Serial.println(WiFi.softAPIP());
+      startCameraServer();
+      Serial.print("Camera Ready! Use 'http://");
+      Serial.print(WiFi.softAPIP());
+      Serial.println("' to connect");
     }
     else
     {
       Serial.println("Echec démarrage AP");
     }
   }
-  Serial.println("WiFi non connecté (timeout)");
-
-  startCameraServer();
-
-  Serial.print("Camera Ready! Use 'http://");
-  Serial.print(WiFi.localIP());
-  Serial.println("' to connect");
 
   // ===========================
 // VL53L1X (optionnel)

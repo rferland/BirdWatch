@@ -1,4 +1,5 @@
 #include <Arduino.h>
+#include <esp_heap_caps.h>
 #include "esp_http_server.h"
 #include "esp_timer.h"
 #include "esp_camera.h"
@@ -11,6 +12,175 @@
 #include "board_config.h"
 #include "config_utils.h"
 #include <ArduinoJson.h>
+#include "esp_http_server.h"
+#include "esp_camera.h"
+#include <ArduinoJson.h>
+#include <string.h>
+void camera_dma_diagnostics(const char *contexte)
+{
+  Serial.printf("[DIAG][%s] Heap: %u, PSRAM: %u, PSRAM size: %u\n", contexte, ESP.getFreeHeap(), ESP.getFreePsram(), ESP.getPsramSize());
+  sensor_t *s = esp_camera_sensor_get();
+  if (s)
+  {
+    Serial.printf("[DIAG][%s] Capteur PID: 0x%02X, framesize: %d, pixformat: %d\n", contexte, s->id.PID, s->status.framesize, s->pixformat);
+  }
+  Serial.printf("[DIAG][%s] PSRAM found: %s\n", contexte, psramFound() ? "OUI" : "NON");
+  Serial.printf("[DIAG][%s] xclk_freq_hz: %d\n", contexte, XCLK_GPIO_NUM);
+}
+
+// Diagnostic après capture
+void camera_fb_diagnostics(const camera_fb_t *fb, const char *contexte)
+{
+  if (fb)
+  {
+    Serial.printf("[DIAG][%s] Frame OK: len=%u, w=%u, h=%u, format=%u\n", contexte, fb->len, fb->width, fb->height, fb->format);
+  }
+  else
+  {
+    Serial.printf("[DIAG][%s] Frame NULL (capture échouée)\n", contexte);
+  }
+  Serial.printf("[DIAG][%s] Heap: %u, PSRAM: %u\n", contexte, ESP.getFreeHeap(), ESP.getFreePsram());
+}
+// Page HTML de réglages caméra
+static const char settings_html[] = R"rawliteral(
+<!DOCTYPE html>
+<html lang='fr'>
+<head>
+  <meta charset='UTF-8'>
+  <title>Réglages Caméra</title>
+  <meta name='viewport' content='width=device-width,initial-scale=1'>
+  <style>body{font-family:sans-serif;max-width:400px;margin:2em auto;}input,select,button{font-size:1em;margin:0.5em 0;width:100%;}</style>
+</head>
+<body>
+  <h2>Réglages Caméra</h2>
+  <form id='settingsForm'>
+    <label>Qualité JPEG (0-63):<input type='number' name='quality' min='0' max='63' value='10'required></label><br>
+    <label>Contraste (-2 à 2):<input type='number' name='contrast' min='-2' max='2' value='0' required></label><br>
+    <label>Luminosité (-2 à 2):<input type='number' name='brightness' min='-2' max='2' value='0' required></label><br>
+    <label>Saturation (-2 à 2):<input type='number' name='saturation' min='-2' max='2' value='0' required></label><br>
+    <label>Balance des blancs auto (AWB):
+      <select name='awb'>
+        <option value='1'>Activé</option>
+        <option value='0'>Désactivé</option>
+      </select>
+    </label><br>
+    <label>Contrôle auto du gain (AGC):
+      <select name='agc'>
+        <option value='1'>Activé</option>
+        <option value='0'>Désactivé</option>
+      </select>
+    </label><br>
+    <label>Contrôle auto de l’exposition (AEC):
+      <select name='aec'>
+        <option value='1'>Activé</option>
+        <option value='0'>Désactivé</option>
+      </select>
+    </label><br>
+    <button type='submit'>Sauvegarder</button>
+  </form>
+  <div id='msg'></div>
+  <script>
+    async function loadSettings() {
+      const res = await fetch('/api/settings');
+      if(res.ok){
+        const s = await res.json();
+        for(const k in s){
+          if(document.forms[0][k]) document.forms[0][k].value = s[k];
+        }
+      }
+    }
+    document.getElementById('settingsForm').onsubmit = async e => {
+      e.preventDefault();
+      const data = Object.fromEntries(new FormData(e.target).entries());
+      for(const k in data) data[k] = Number(data[k]);
+      const res = await fetch('/api/settings', {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify(data)
+      });
+      if(res.ok){
+        document.getElementById('msg').innerHTML = 'Réglages sauvegardés !';
+      }else{
+        document.getElementById('msg').innerHTML = 'Erreur lors de la sauvegarde.';
+      }
+    };
+    loadSettings();
+  </script>
+</body>
+</html>
+)rawliteral";
+
+// Handler GET /settings.html
+static esp_err_t settings_html_handler(httpd_req_t *req)
+{
+  httpd_resp_set_type(req, "text/html");
+  httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+  httpd_resp_send(req, settings_html, strlen(settings_html));
+  return ESP_OK;
+}
+
+// Handler GET/POST /api/settings
+static esp_err_t settings_api_handler(httpd_req_t *req)
+{
+  if (req->method == HTTP_GET)
+  {
+    StaticJsonDocument<256> doc;
+    loadConfig(doc, "/settings.json");
+    String out;
+    serializeJson(doc, out);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    httpd_resp_sendstr(req, out.c_str());
+    return ESP_OK;
+  }
+  else if (req->method == HTTP_POST)
+  {
+    char buf[256];
+    int len = req->content_len;
+    if (len > 255)
+      len = 255;
+    int r = httpd_req_recv(req, buf, len);
+    if (r <= 0)
+    {
+      httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Reception failed");
+      return ESP_FAIL;
+    }
+    buf[r] = 0;
+    StaticJsonDocument<256> doc;
+    DeserializationError err = deserializeJson(doc, buf);
+    if (err)
+    {
+      httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "JSON invalide");
+      return ESP_FAIL;
+    }
+    saveConfig(doc, "/settings.json");
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    httpd_resp_sendstr(req, "{\"status\":\"ok\"}");
+    // Appliquer les réglages à la caméra immédiatement
+    sensor_t *s = esp_camera_sensor_get();
+    if (s)
+    {
+      if (doc.containsKey("quality"))
+        s->set_quality(s, doc["quality"]);
+      if (doc.containsKey("contrast"))
+        s->set_contrast(s, doc["contrast"]);
+      if (doc.containsKey("brightness"))
+        s->set_brightness(s, doc["brightness"]);
+      if (doc.containsKey("saturation"))
+        s->set_saturation(s, doc["saturation"]);
+      if (doc.containsKey("awb"))
+        s->set_whitebal(s, doc["awb"]);
+      if (doc.containsKey("agc"))
+        s->set_gain_ctrl(s, doc["agc"]);
+      if (doc.containsKey("aec"))
+        s->set_exposure_ctrl(s, doc["aec"]);
+    }
+    return ESP_OK;
+  }
+  httpd_resp_send_err(req, HTTPD_405_METHOD_NOT_ALLOWED, "Method not allowed");
+  return ESP_FAIL;
+}
 
 // Page HTML de configuration WiFi
 static const char config_html[] = R"rawliteral(
@@ -58,8 +228,12 @@ static const char config_html[] = R"rawliteral(
       }
     };
   </script>
+  </body>
+</html>
+  )rawliteral";
 // Handler POST /api/reboot
-static esp_err_t reboot_handler(httpd_req_t *req) {
+static esp_err_t reboot_handler(httpd_req_t *req)
+{
   httpd_resp_set_type(req, "application/json");
   httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
   httpd_resp_sendstr(req, "{\"status\":\"rebooting\"}");
@@ -67,9 +241,6 @@ static esp_err_t reboot_handler(httpd_req_t *req) {
   ESP.restart();
   return ESP_OK;
 }
-</body>
-</html>
-  )rawliteral";
 
 // Handler GET /config.html
 static esp_err_t config_html_handler(httpd_req_t *req)
@@ -482,6 +653,11 @@ static esp_err_t parse_get(httpd_req_t *req, char **obuf)
 
 static esp_err_t cmd_handler(httpd_req_t *req)
 {
+  Serial.printf("[cmd_handler] req ptr: %p\n", req);
+  Serial.printf("[cmd_handler] req->uri: %s\n", req->uri ? req->uri : "(null)");
+  Serial.printf("[cmd_handler] req->method: %d\n", req->method);
+  Serial.printf("[cmd_handler] req->content_len: %d\n", req->content_len);
+
   char *buf = NULL;
   char variable[32];
   char value[32];
@@ -640,79 +816,94 @@ static int print_reg(char *p, sensor_t *s, uint16_t reg, uint32_t mask)
 static esp_err_t status_handler(httpd_req_t *req)
 {
   static char json_response[1024];
-
   sensor_t *s = esp_camera_sensor_get();
   char *p = json_response;
   *p++ = '{';
+  int first = 1;
 
-  if (s->id.PID == OV5640_PID || s->id.PID == OV3660_PID)
-  {
-    for (int reg = 0x3400; reg < 0x3406; reg += 2)
-    {
-      p += print_reg(p, s, reg, 0xFFF); // 12 bit
-    }
-    p += print_reg(p, s, 0x3406, 0xFF);
-
-    p += print_reg(p, s, 0x3500, 0xFFFF0); // 16 bit
-    p += print_reg(p, s, 0x3503, 0xFF);
-    p += print_reg(p, s, 0x350a, 0x3FF);  // 10 bit
-    p += print_reg(p, s, 0x350c, 0xFFFF); // 16 bit
-
-    for (int reg = 0x5480; reg <= 0x5490; reg++)
-    {
-      p += print_reg(p, s, reg, 0xFF);
-    }
-
-    for (int reg = 0x5380; reg <= 0x538b; reg++)
-    {
-      p += print_reg(p, s, reg, 0xFF);
-    }
-
-    for (int reg = 0x5580; reg < 0x558a; reg++)
-    {
-      p += print_reg(p, s, reg, 0xFF);
-    }
-    p += print_reg(p, s, 0x558a, 0x1FF); // 9 bit
+// Ajout des registres (optionnel, peut être commenté si non utile)
+/*
+if (s->id.PID == OV5640_PID || s->id.PID == OV3660_PID) {
+  for (int reg = 0x3400; reg < 0x3406; reg += 2) {
+    if (!first) p += sprintf(p, ","); first = 0;
+    p += print_reg(p, s, reg, 0xFFF);
   }
-  else if (s->id.PID == OV2640_PID)
-  {
-    p += print_reg(p, s, 0xd3, 0xFF);
-    p += print_reg(p, s, 0x111, 0xFF);
-    p += print_reg(p, s, 0x132, 0xFF);
+  if (!first) p += sprintf(p, ","); first = 0;
+  p += print_reg(p, s, 0x3406, 0xFF);
+  if (!first) p += sprintf(p, ","); first = 0;
+  p += print_reg(p, s, 0x3500, 0xFFFF0);
+  if (!first) p += sprintf(p, ","); first = 0;
+  p += print_reg(p, s, 0x3503, 0xFF);
+  if (!first) p += sprintf(p, ","); first = 0;
+  p += print_reg(p, s, 0x350a, 0x3FF);
+  if (!first) p += sprintf(p, ","); first = 0;
+  p += print_reg(p, s, 0x350c, 0xFFFF);
+  for (int reg = 0x5480; reg <= 0x5490; reg++) {
+    if (!first) p += sprintf(p, ","); first = 0;
+    p += print_reg(p, s, reg, 0xFF);
   }
+  for (int reg = 0x5380; reg <= 0x538b; reg++) {
+    if (!first) p += sprintf(p, ","); first = 0;
+    p += print_reg(p, s, reg, 0xFF);
+  }
+  for (int reg = 0x5580; reg < 0x558a; reg++) {
+    if (!first) p += sprintf(p, ","); first = 0;
+    p += print_reg(p, s, reg, 0xFF);
+  }
+  if (!first) p += sprintf(p, ","); first = 0;
+  p += print_reg(p, s, 0x558a, 0x1FF);
+} else if (s->id.PID == OV2640_PID) {
+  if (!first) p += sprintf(p, ","); first = 0;
+  p += print_reg(p, s, 0xd3, 0xFF);
+  if (!first) p += sprintf(p, ","); first = 0;
+  p += print_reg(p, s, 0x111, 0xFF);
+  if (!first) p += sprintf(p, ","); first = 0;
+  p += print_reg(p, s, 0x132, 0xFF);
+}
+*/
 
-  p += sprintf(p, "\"xclk\":%u,", s->xclk_freq_hz / 1000000);
-  p += sprintf(p, "\"pixformat\":%u,", s->pixformat);
-  p += sprintf(p, "\"framesize\":%u,", s->status.framesize);
-  p += sprintf(p, "\"quality\":%u,", s->status.quality);
-  p += sprintf(p, "\"brightness\":%d,", s->status.brightness);
-  p += sprintf(p, "\"contrast\":%d,", s->status.contrast);
-  p += sprintf(p, "\"saturation\":%d,", s->status.saturation);
-  p += sprintf(p, "\"sharpness\":%d,", s->status.sharpness);
-  p += sprintf(p, "\"special_effect\":%u,", s->status.special_effect);
-  p += sprintf(p, "\"wb_mode\":%u,", s->status.wb_mode);
-  p += sprintf(p, "\"awb\":%u,", s->status.awb);
-  p += sprintf(p, "\"awb_gain\":%u,", s->status.awb_gain);
-  p += sprintf(p, "\"aec\":%u,", s->status.aec);
-  p += sprintf(p, "\"aec2\":%u,", s->status.aec2);
-  p += sprintf(p, "\"ae_level\":%d,", s->status.ae_level);
-  p += sprintf(p, "\"aec_value\":%u,", s->status.aec_value);
-  p += sprintf(p, "\"agc\":%u,", s->status.agc);
-  p += sprintf(p, "\"agc_gain\":%u,", s->status.agc_gain);
-  p += sprintf(p, "\"gainceiling\":%u,", s->status.gainceiling);
-  p += sprintf(p, "\"bpc\":%u,", s->status.bpc);
-  p += sprintf(p, "\"wpc\":%u,", s->status.wpc);
-  p += sprintf(p, "\"raw_gma\":%u,", s->status.raw_gma);
-  p += sprintf(p, "\"lenc\":%u,", s->status.lenc);
-  p += sprintf(p, "\"hmirror\":%u,", s->status.hmirror);
-  p += sprintf(p, "\"vflip\":%u,", s->status.vflip);
-  p += sprintf(p, "\"dcw\":%u,", s->status.dcw);
-  p += sprintf(p, "\"colorbar\":%u", s->status.colorbar);
+// Ajout des champs principaux
+#define ADD_FIELD(fmt, ...)            \
+  do                                   \
+  {                                    \
+    if (!first)                        \
+      p += sprintf(p, ",");            \
+    p += sprintf(p, fmt, __VA_ARGS__); \
+    first = 0;                         \
+  } while (0)
+  ADD_FIELD("\"xclk\":%u", s->xclk_freq_hz / 1000000);
+  ADD_FIELD("\"pixformat\":%u", s->pixformat);
+  ADD_FIELD("\"framesize\":%u", s->status.framesize);
+  ADD_FIELD("\"quality\":%u", s->status.quality);
+  ADD_FIELD("\"brightness\":%d", s->status.brightness);
+  ADD_FIELD("\"contrast\":%d", s->status.contrast);
+  ADD_FIELD("\"saturation\":%d", s->status.saturation);
+  ADD_FIELD("\"sharpness\":%d", s->status.sharpness);
+  ADD_FIELD("\"special_effect\":%u", s->status.special_effect);
+  ADD_FIELD("\"wb_mode\":%u", s->status.wb_mode);
+  ADD_FIELD("\"awb\":%u", s->status.awb);
+  ADD_FIELD("\"awb_gain\":%u", s->status.awb_gain);
+  ADD_FIELD("\"aec\":%u", s->status.aec);
+  ADD_FIELD("\"aec2\":%u", s->status.aec2);
+  ADD_FIELD("\"ae_level\":%d", s->status.ae_level);
+  ADD_FIELD("\"aec_value\":%u", s->status.aec_value);
+  ADD_FIELD("\"agc\":%u", s->status.agc);
+  ADD_FIELD("\"agc_gain\":%u", s->status.agc_gain);
+  ADD_FIELD("\"gainceiling\":%u", s->status.gainceiling);
+  ADD_FIELD("\"bpc\":%u", s->status.bpc);
+  ADD_FIELD("\"wpc\":%u", s->status.wpc);
+  ADD_FIELD("\"raw_gma\":%u", s->status.raw_gma);
+  ADD_FIELD("\"lenc\":%u", s->status.lenc);
+  ADD_FIELD("\"hmirror\":%u", s->status.hmirror);
+  ADD_FIELD("\"vflip\":%u", s->status.vflip);
+  ADD_FIELD("\"dcw\":%u", s->status.dcw);
+  ADD_FIELD("\"colorbar\":%u", s->status.colorbar);
 #if defined(LED_GPIO_NUM)
-  p += sprintf(p, ",\"led_intensity\":%u", led_duty);
+  ADD_FIELD("\"led_intensity\":%u", led_duty);
 #else
-  p += sprintf(p, ",\"led_intensity\":%d", -1);
+  ADD_FIELD("\"led_intensity\":%d", -1);
 #endif
+#undef ADD_FIELD
   *p++ = '}';
   *p++ = 0;
   httpd_resp_set_type(req, "application/json");
@@ -927,7 +1118,45 @@ static esp_err_t index_handler(httpd_req_t *req)
 }
 
 void startCameraServer()
-    httpd_uri_t reboot_uri = {
+{
+  Serial.println("startCameraServer() Starting web server on port: '80'");
+  httpd_uri_t settings_html_uri = {
+      .uri = "/settings.html",
+      .method = HTTP_GET,
+      .handler = settings_html_handler,
+      .user_ctx = NULL
+#ifdef CONFIG_HTTPD_WS_SUPPORT
+      ,
+      .is_websocket = false,
+      .handle_ws_control_frames = false,
+      .supported_subprotocol = NULL
+#endif
+  };
+  httpd_uri_t settings_api_uri = {
+      .uri = "/api/settings",
+      .method = HTTP_GET,
+      .handler = settings_api_handler,
+      .user_ctx = NULL
+#ifdef CONFIG_HTTPD_WS_SUPPORT
+      ,
+      .is_websocket = false,
+      .handle_ws_control_frames = false,
+      .supported_subprotocol = NULL
+#endif
+  };
+  httpd_uri_t settings_api_post_uri = {
+      .uri = "/api/settings",
+      .method = HTTP_POST,
+      .handler = settings_api_handler,
+      .user_ctx = NULL
+#ifdef CONFIG_HTTPD_WS_SUPPORT
+      ,
+      .is_websocket = false,
+      .handle_ws_control_frames = false,
+      .supported_subprotocol = NULL
+#endif
+  };
+  httpd_uri_t reboot_uri = {
       .uri = "/api/reboot",
       .method = HTTP_POST,
       .handler = reboot_handler,
@@ -938,8 +1167,8 @@ void startCameraServer()
       .handle_ws_control_frames = false,
       .supported_subprotocol = NULL
 #endif
-    };
-{
+  };
+
   httpd_uri_t config_html_uri = {
       .uri = "/config.html",
       .method = HTTP_GET,
@@ -1103,14 +1332,25 @@ void startCameraServer()
   ra_filter_init(&ra_filter, 20);
 
   log_i("Starting web server on port: '%d'", config.server_port);
+  Serial.println("[DIAG] Registering URI handlers...");
   if (httpd_start(&camera_httpd, &config) == ESP_OK)
   {
+    Serial.println("[DIAG] Web server started OK");
+    Serial.println("[DIAG] Registering /control handler...");
+    esp_err_t reg_res = httpd_register_uri_handler(camera_httpd, &cmd_uri);
+    if (reg_res == ESP_OK)
+    {
+      Serial.println("[DIAG] /control handler registered successfully");
+    }
+    else
+    {
+      Serial.printf("[DIAG] /control handler registration FAILED: %d\n", reg_res);
+    }
+    // Register other handlers as before
     httpd_register_uri_handler(camera_httpd, &index_uri);
-    httpd_register_uri_handler(camera_httpd, &cmd_uri);
     httpd_register_uri_handler(camera_httpd, &status_uri);
     httpd_register_uri_handler(camera_httpd, &capture_uri);
     httpd_register_uri_handler(camera_httpd, &bmp_uri);
-
     httpd_register_uri_handler(camera_httpd, &xclk_uri);
     httpd_register_uri_handler(camera_httpd, &reg_uri);
     httpd_register_uri_handler(camera_httpd, &greg_uri);
@@ -1119,6 +1359,36 @@ void startCameraServer()
     httpd_register_uri_handler(camera_httpd, &config_uri);
     httpd_register_uri_handler(camera_httpd, &config_html_uri);
     httpd_register_uri_handler(camera_httpd, &reboot_uri);
+    httpd_register_uri_handler(camera_httpd, &settings_html_uri);
+    httpd_register_uri_handler(camera_httpd, &settings_api_uri);
+    httpd_register_uri_handler(camera_httpd, &settings_api_post_uri);
+    // Charger et appliquer les réglages caméra au démarrage
+    StaticJsonDocument<512> doc_settings;
+    if (loadConfig(doc_settings, "/settings.json"))
+    {
+      sensor_t *s = esp_camera_sensor_get();
+      if (s)
+      {
+        if (doc_settings.containsKey("quality"))
+          s->set_quality(s, doc_settings["quality"]);
+        if (doc_settings.containsKey("contrast"))
+          s->set_contrast(s, doc_settings["contrast"]);
+        if (doc_settings.containsKey("brightness"))
+          s->set_brightness(s, doc_settings["brightness"]);
+        if (doc_settings.containsKey("saturation"))
+          s->set_saturation(s, doc_settings["saturation"]);
+        if (doc_settings.containsKey("awb"))
+          s->set_whitebal(s, doc_settings["awb"]);
+        if (doc_settings.containsKey("agc"))
+          s->set_gain_ctrl(s, doc_settings["agc"]);
+        if (doc_settings.containsKey("aec"))
+          s->set_exposure_ctrl(s, doc_settings["aec"]);
+      }
+    }
+  }
+  else
+  {
+    Serial.println("[DIAG] Web server FAILED to start");
   }
 
   config.server_port += 1;
