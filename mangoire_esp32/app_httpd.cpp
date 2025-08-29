@@ -49,44 +49,65 @@ static const char settings_html[] = R"rawliteral(
   <meta charset='UTF-8'>
   <title>Réglages Caméra</title>
   <meta name='viewport' content='width=device-width,initial-scale=1'>
-  <style>body{font-family:sans-serif;max-width:400px;margin:2em auto;}input,select,button{font-size:1em;margin:0.5em 0;width:100%;}</style>
+  <style>
+    body{font-family:sans-serif;max-width:900px;margin:2em auto;}
+    .flex-row{display:flex;flex-direction:row;align-items:flex-start;gap:2em;}
+    #settingsForm{min-width:320px;max-width:400px;flex:1;}
+    #liveStream{flex:1;min-width:320px;max-width:480px;}
+    input,select,button{font-size:1em;margin:0.5em 0;width:100%;}
+  </style>
 </head>
 <body>
-  <h2>Réglages Caméra</h2>
-  <form id='settingsForm'>
-    <label>Qualité JPEG (0-63):<input type='number' name='quality' min='0' max='63' value='10'required></label><br>
-    <label>Contraste (-2 à 2):<input type='number' name='contrast' min='-2' max='2' value='0' required></label><br>
-    <label>Luminosité (-2 à 2):<input type='number' name='brightness' min='-2' max='2' value='0' required></label><br>
-    <label>Saturation (-2 à 2):<input type='number' name='saturation' min='-2' max='2' value='0' required></label><br>
-    <label>Balance des blancs auto (AWB):
-      <select name='awb'>
-        <option value='1'>Activé</option>
-        <option value='0'>Désactivé</option>
-      </select>
-    </label><br>
-    <label>Contrôle auto du gain (AGC):
-      <select name='agc'>
-        <option value='1'>Activé</option>
-        <option value='0'>Désactivé</option>
-      </select>
-    </label><br>
-    <label>Contrôle auto de l’exposition (AEC):
-      <select name='aec'>
-        <option value='1'>Activé</option>
-        <option value='0'>Désactivé</option>
-      </select>
-    </label><br>
-    <button type='submit'>Sauvegarder</button>
-  </form>
-  <div id='msg'></div>
+  <div class="flex-row">
+    <div>
+      <h2>Réglages Caméra</h2>
+      <form id='settingsForm'>
+        <label>Qualité JPEG (0-63):<input type='number' name='quality' min='0' max='63' value='10'required></label><br>
+        <label>Contraste (-2 à 2):<input type='number' name='contrast' min='-2' max='2' value='0' required></label><br>
+        <label>Luminosité (-2 à 2):<input type='number' name='brightness' min='-2' max='2' value='0' required></label><br>
+        <label>Saturation (-2 à 2):<input type='number' name='saturation' min='-2' max='2' value='0' required></label><br>
+        <label>Balance des blancs auto (AWB):
+          <select name='awb'>
+            <option value='1'>Activé</option>
+            <option value='0'>Désactivé</option>
+          </select>
+        </label><br>
+        <label>Contrôle auto du gain (AGC):
+          <select name='agc'>
+            <option value='1'>Activé</option>
+            <option value='0'>Désactivé</option>
+          </select>
+        </label><br>
+        <label>Contrôle auto de l’exposition (AEC):
+          <select name='aec'>
+            <option value='1'>Activé</option>
+            <option value='0'>Désactivé</option>
+          </select>
+        </label><br>
+        <button type='submit'>Sauvegarder</button>
+      </form>
+      <div id='msg'></div>
+    </div>
+    <div id="liveStream">
+      <img id="streamImg" src="/stream" style="width:100%;max-width:400px;">
+    </div>
+  </div>
   <script>
     async function loadSettings() {
-      const res = await fetch('/api/settings');
-      if(res.ok){
-        const s = await res.json();
-        for(const k in s){
-          if(document.forms[0][k]) document.forms[0][k].value = s[k];
+      try {
+        const res = await fetch('/api/settings');
+        if(res.ok){
+          const s = await res.json();
+          for(const k in s){
+            // On ne modifie la valeur du champ que si elle existe dans le formulaire
+            if(document.forms[0][k] !== undefined && s[k] !== undefined && s[k] !== null) {
+              document.forms[0][k].value = s[k];
+            }
+          }
         }
+        // Si le fichier n'existe pas ou la clé n'est pas présente, la valeur par défaut HTML reste
+      } catch(e) {
+        // Erreur de fetch : on garde les valeurs par défaut du HTML
       }
     }
     document.getElementById('settingsForm').onsubmit = async e => {
@@ -100,6 +121,9 @@ static const char settings_html[] = R"rawliteral(
       });
       if(res.ok){
         document.getElementById('msg').innerHTML = 'Réglages sauvegardés !';
+        // Rafraîchir le flux en changeant l'URL (pour forcer le navigateur à recharger)
+        const img = document.getElementById('streamImg');
+        img.src = '/stream?ts=' + Date.now();
       }else{
         document.getElementById('msg').innerHTML = 'Erreur lors de la sauvegarde.';
       }
@@ -1183,7 +1207,7 @@ void startCameraServer()
   };
 
   httpd_config_t config = HTTPD_DEFAULT_CONFIG();
-  config.max_uri_handlers = 16;
+  config.max_uri_handlers = 24;
   config.max_open_sockets = 4; // Augmente à 4 connexions simultanées (adapte selon ta RAM)
 
   httpd_uri_t index_uri = {
@@ -1364,8 +1388,10 @@ void startCameraServer()
     httpd_register_uri_handler(camera_httpd, &settings_api_post_uri);
     // Charger et appliquer les réglages caméra au démarrage
     StaticJsonDocument<512> doc_settings;
+
     if (loadConfig(doc_settings, "/settings.json"))
     {
+      Serial.println("[DIAG] LoadConfig OK");
       sensor_t *s = esp_camera_sensor_get();
       if (s)
       {
@@ -1384,6 +1410,14 @@ void startCameraServer()
         if (doc_settings.containsKey("aec"))
           s->set_exposure_ctrl(s, doc_settings["aec"]);
       }
+      else
+      {
+        Serial.println("[DIAG] esp_camera_sensor_get Error");
+      }
+    }
+    else
+    {
+      Serial.println("[DIAG] LoadConfig Error");
     }
   }
   else
@@ -1391,12 +1425,17 @@ void startCameraServer()
     Serial.println("[DIAG] Web server FAILED to start");
   }
 
-  config.server_port += 1;
-  config.ctrl_port += 1;
-  log_i("Starting stream server on port: '%d'", config.server_port);
-  if (httpd_start(&stream_httpd, &config) == ESP_OK)
+  // Enregistrer le handler /stream sur le même serveur HTTP (port 80)
+  Serial.println("[DIAG] Tentative d'enregistrement du handler /stream...");
+  esp_err_t stream_reg_res = httpd_register_uri_handler(camera_httpd, &stream_uri);
+  Serial.printf("[DIAG] Résultat httpd_register_uri_handler /stream: %d\n", stream_reg_res);
+  if (stream_reg_res == ESP_OK)
   {
-    httpd_register_uri_handler(stream_httpd, &stream_uri);
+    Serial.println("[DIAG] Handler /stream enregistré avec succès sur le serveur principal");
+  }
+  else
+  {
+    Serial.printf("[DIAG] Échec de l'enregistrement du handler /stream sur le serveur principal: %d\n", stream_reg_res);
   }
 }
 
