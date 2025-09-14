@@ -1,6 +1,6 @@
-#define ENABLE_VL53L1X 0 // Mettre à 0 pour désactiver le capteur VL53L1X
+#define ENABLE_VL53L1X 1 // Mettre à 0 pour désactiver le capteur VL53L1X
 #if ENABLE_VL53L1X
-#include "vl53l1x_sleep.h"
+#include "VL53L1X_ULD.h"
 #endif
 #include "esp_camera.h"
 #include <WiFi.h>
@@ -10,17 +10,16 @@
 // Select camera model in board_config.h
 // ===========================
 #include "board_config.h"
-
+#include "vl53l1x_sleep.h"
 #include <Wire.h>
-#include "VL53L1X_ULD.h" // Fichiers ST : VL53L1X_api.c/.h et VL53L1X_platform.c/.h doivent être ajoutés au projet
 
 // ===========================
 // VL53L1X
 // ===========================
 #define I2C_SDA 14
 #define I2C_SCL 15
-#define VL53L1X_I2C_ADDR 0x52       // Adresse par défaut du VL53L1X
-#define VL53L1X_INT_PIN GPIO_NUM_13 // GPIO1 du VL53L1X → GPIO13 ESP32
+#define VL53L1X_I2C_ADDR 0x52 // Adresse par défaut du VL53L1X Arduino
+#define VL53L1X_INT_PIN 13    // GPIO1 du VL53L1X → GPIO13 ESP32
 
 // ===========================
 // WiFi credentials (chargés dynamiquement)
@@ -34,6 +33,12 @@ char password[64] = "";
 
 void startCameraServer();
 void setupLedFlash();
+
+#if ENABLE_VL53L1X
+// Machine à états pour la vérification non bloquante
+
+static unsigned long lastVL53Check = 0;
+#endif
 
 void setup()
 {
@@ -174,7 +179,7 @@ void setup()
   setupLedFlash();
 #endif
 
-  Serial.printf("Tentative connexion WiFi: ssid='%s'\n", ssid);
+  Serial.printf("Tentative connexion WiFi: ssid='%s', password='%s'\n", ssid, password);
   WiFi.begin(ssid, password);
   WiFi.mode(WIFI_STA);
   WiFi.begin(ssid, password);
@@ -224,16 +229,61 @@ void setup()
     }
   }
 
-  // ===========================
+// ===========================
 // VL53L1X (optionnel)
 // ===========================
 #if ENABLE_VL53L1X
-  setupVL53L1XAndSleep();
+  Serial.println("Initialisation VL53L1X via API ST");
+  try
+  {
+    setupVL53L1XAndSleep();
+  }
+  catch (...)
+  {
+    Serial.println("Erreur lors de l'initialisation du VL53L1X (exception)");
+  }
 #endif
-  // Deep sleep déjà géré dans setupVL53L1XAndSleep()
+  Serial.println("Setup terminé!");
 }
 
+void checkVL53L1X()
+{
+  uint8_t dataReady = 0;
+
+  if (millis() - lastVL53Check > 1000)
+  { // toutes les secoondes
+    while (dataReady == 0)
+    {
+      VL53L1X_CheckForDataReady(VL53L1X_I2C_ADDR, &dataReady);
+      delay(2);
+    }
+    lastVL53Check = millis();
+    uint16_t distance = 0;
+    VL53L1X_GetDistance(VL53L1X_I2C_ADDR, &distance);
+
+    Serial.print("Distance initiale: ");
+    Serial.print(distance);
+    Serial.println(" mm");
+    if (distance < 500 && distance > 0)
+    {
+      Serial.print("Objet détecté à ");
+      Serial.print(distance);
+      Serial.println(" mm");
+    }
+    else
+    {
+      Serial.println("Objet éloigné -> Deep Sleep");
+      // Ici, tu peux gérer l'interruption ou le deep sleep si besoin
+      esp_sleep_enable_ext1_wakeup(1ULL << VL53L1X_INT_PIN, ESP_EXT1_WAKEUP_ALL_LOW);
+      esp_deep_sleep_start();
+    }
+  }
+}
 void loop()
 {
-  // Do nothing. Everything is done in another task by the web server
+
+// ... serveur web et autres tâches ...
+#if ENABLE_VL53L1X
+  checkVL53L1X();
+#endif
 }

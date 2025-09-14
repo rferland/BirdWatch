@@ -48,13 +48,13 @@
    const val = resSelect.value;
    // 1. Change la résolution sur l'ESP32
    try {
-     fetch('http://10.0.0.76:81/control?var=framesize&val=' + val);
+     fetch('http://192.168.4.1/control?var=framesize&val=' + val);
      // 2. Attend un peu que la cam s'ajuste
      await new Promise(r => setTimeout(r, 500));
      // 3. Demande la capture
-     const resp = fetch('http://10.0.0.76:81/capture');
+     const resp = fetch('http://192.168.4.1/capture');
      // 4. Affiche l'image capturée
-     captureImg.src = 'http://10.0.0.76:81/capture?_t=' + Date.now();
+     captureImg.src = 'http://192.168.4.1/capture?_t=' + Date.now();
      captureImg.style.display = '';
    } catch (e) {
      alert("Erreur lors de la capture : " + e);

@@ -93,6 +93,24 @@ static const char settings_html[] = R"rawliteral(
     </div>
   </div>
   <script>
+    // Fonction pour charger la config WiFi et pré-remplir le formulaire
+    async function loadConfig() {
+      try {
+        const res = await fetch('/api/config');
+        if(res.ok){
+          const s = await res.json();
+          for(const k in s){
+            if(document.forms[0][k] !== undefined && s[k] !== undefined && s[k] !== null) {
+              document.forms[0][k].value = s[k];
+            }
+          }
+        }
+      } catch(e) {
+        // Erreur de fetch : on garde les valeurs par défaut du HTML
+      }
+    }
+    // Appel initial pour pré-remplir le formulaire au chargement
+    loadConfig();
     async function loadSettings() {
       try {
         const res = await fetch('/api/settings');
@@ -137,6 +155,8 @@ static const char settings_html[] = R"rawliteral(
 // Handler GET /settings.html
 static esp_err_t settings_html_handler(httpd_req_t *req)
 {
+  Serial.println("[HTTPD] GET /settings.html");
+
   httpd_resp_set_type(req, "text/html");
   httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
   httpd_resp_send(req, settings_html, strlen(settings_html));
@@ -146,6 +166,12 @@ static esp_err_t settings_html_handler(httpd_req_t *req)
 // Handler GET/POST /api/settings
 static esp_err_t settings_api_handler(httpd_req_t *req)
 {
+  Serial.print("[HTTPD] ");
+  if (req->method == HTTP_GET)
+    Serial.println("GET /api/settings");
+  else if (req->method == HTTP_POST)
+    Serial.println("POST /api/settings");
+
   if (req->method == HTTP_GET)
   {
     StaticJsonDocument<256> doc;
@@ -223,9 +249,10 @@ static const char config_html[] = R"rawliteral(
     <label>Mot de passe:<input name='password' type='password'></label><br>
     <button type='submit'>Enregistrer</button>
   </form>
-  <button id='rebootBtn' style='background:#c00;color:#fff;'>Redémarrer l\'ESP32</button>
+  
   <div id='msg'></div>
   <script>
+    
     const form = document.getElementById('wifiForm');
     form.onsubmit = async e => {
       e.preventDefault();
@@ -236,21 +263,13 @@ static const char config_html[] = R"rawliteral(
         body: JSON.stringify(data)
       });
       if(res.ok){
-        document.getElementById('msg').innerHTML = 'Configuration enregistrée. Redémarrez l\'ESP32.';
+        document.getElementById('msg').innerHTML = 'Configuration enregistrée. ';
+        // Recharge les valeurs depuis la config sauvegardée
+        await loadConfig();
       }else{
         document.getElementById('msg').innerHTML = 'Erreur lors de l\'enregistrement.';
       }
-    };
-    document.getElementById('rebootBtn').onclick = async () => {
-      if(confirm('Redémarrer l\\'ESP32 ?')){
-        const res = await fetch('/api/reboot', {method:'POST'});
-        if(res.ok){
-          document.getElementById('msg').innerHTML = 'Redémarrage en cours...';
-        }else{
-          document.getElementById('msg').innerHTML = 'Erreur lors du redémarrage.';
-        }
-      }
-    };
+    };   
   </script>
   </body>
 </html>
@@ -258,6 +277,8 @@ static const char config_html[] = R"rawliteral(
 // Handler POST /api/reboot
 static esp_err_t reboot_handler(httpd_req_t *req)
 {
+  Serial.println("[HTTPD] POST /api/reboot");
+
   httpd_resp_set_type(req, "application/json");
   httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
   httpd_resp_sendstr(req, "{\"status\":\"rebooting\"}");
@@ -269,6 +290,8 @@ static esp_err_t reboot_handler(httpd_req_t *req)
 // Handler GET /config.html
 static esp_err_t config_html_handler(httpd_req_t *req)
 {
+  Serial.println("[HTTPD] GET /config.html");
+
   httpd_resp_set_type(req, "text/html");
   httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
   httpd_resp_send(req, config_html, strlen(config_html));
@@ -290,6 +313,8 @@ static esp_err_t config_html_handler(httpd_req_t *req)
 // Handler pour POST /api/config
 static esp_err_t config_update_handler(httpd_req_t *req)
 {
+  Serial.println("[HTTPD] POST /api/config");
+
   // Limite de 1024 octets pour la config
   char buf[1025];
   int total_len = req->content_len;
@@ -427,6 +452,8 @@ void enable_led(bool en)
 
 static esp_err_t bmp_handler(httpd_req_t *req)
 {
+  Serial.println("[HTTPD] GET /bmp");
+
   camera_fb_t *fb = NULL;
   esp_err_t res = ESP_OK;
 #if ARDUHAL_LOG_LEVEL >= ARDUHAL_LOG_LEVEL_INFO
@@ -484,6 +511,8 @@ static size_t jpg_encode_stream(void *arg, size_t index, const void *data, size_
 
 static esp_err_t capture_handler(httpd_req_t *req)
 {
+  Serial.println("[HTTPD] GET /capture");
+
   camera_fb_t *fb = NULL;
   esp_err_t res = ESP_OK;
 #if ARDUHAL_LOG_LEVEL >= ARDUHAL_LOG_LEVEL_INFO
@@ -543,6 +572,8 @@ static esp_err_t capture_handler(httpd_req_t *req)
 
 static esp_err_t stream_handler(httpd_req_t *req)
 {
+  Serial.println("[HTTPD] GET /stream");
+
   camera_fb_t *fb = NULL;
   struct timeval _timestamp;
   esp_err_t res = ESP_OK;
@@ -677,6 +708,8 @@ static esp_err_t parse_get(httpd_req_t *req, char **obuf)
 
 static esp_err_t cmd_handler(httpd_req_t *req)
 {
+  Serial.println("[HTTPD] GET /control");
+
   Serial.printf("[cmd_handler] req ptr: %p\n", req);
   Serial.printf("[cmd_handler] req->uri: %s\n", req->uri ? req->uri : "(null)");
   Serial.printf("[cmd_handler] req->method: %d\n", req->method);
@@ -839,6 +872,8 @@ static int print_reg(char *p, sensor_t *s, uint16_t reg, uint32_t mask)
 
 static esp_err_t status_handler(httpd_req_t *req)
 {
+  Serial.println("[HTTPD] GET /status");
+
   static char json_response[1024];
   sensor_t *s = esp_camera_sensor_get();
   char *p = json_response;
@@ -937,6 +972,8 @@ if (s->id.PID == OV5640_PID || s->id.PID == OV3660_PID) {
 
 static esp_err_t xclk_handler(httpd_req_t *req)
 {
+  Serial.println("[HTTPD] GET /xclk");
+
   char *buf = NULL;
   char _xclk[32];
 
@@ -968,6 +1005,8 @@ static esp_err_t xclk_handler(httpd_req_t *req)
 
 static esp_err_t reg_handler(httpd_req_t *req)
 {
+  Serial.println("[HTTPD] GET /reg");
+
   char *buf = NULL;
   char _reg[32];
   char _mask[32];
@@ -1003,6 +1042,7 @@ static esp_err_t reg_handler(httpd_req_t *req)
 
 static esp_err_t greg_handler(httpd_req_t *req)
 {
+  Serial.println("[HTTPD] GET /greg");
   char *buf = NULL;
   char _reg[32];
   char _mask[32];
@@ -1047,6 +1087,8 @@ static int parse_get_var(char *buf, const char *key, int def)
 
 static esp_err_t pll_handler(httpd_req_t *req)
 {
+  Serial.println("[HTTPD] GET /pll");
+
   char *buf = NULL;
 
   if (parse_get(req, &buf) != ESP_OK)
@@ -1078,6 +1120,8 @@ static esp_err_t pll_handler(httpd_req_t *req)
 
 static esp_err_t win_handler(httpd_req_t *req)
 {
+  Serial.println("[HTTPD] GET /resolution");
+
   char *buf = NULL;
 
   if (parse_get(req, &buf) != ESP_OK)
@@ -1116,6 +1160,8 @@ static esp_err_t win_handler(httpd_req_t *req)
 
 static esp_err_t index_handler(httpd_req_t *req)
 {
+  Serial.println("[HTTPD] GET /");
+
   httpd_resp_set_type(req, "text/html");
   httpd_resp_set_hdr(req, "Content-Encoding", "gzip");
   sensor_t *s = esp_camera_sensor_get();

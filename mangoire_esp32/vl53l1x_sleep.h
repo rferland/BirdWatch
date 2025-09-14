@@ -8,7 +8,7 @@
 
 #define I2C_SDA 14
 #define I2C_SCL 15
-#define VL53L1X_I2C_ADDR 0x52
+#define VL53L1X_I2C_ADDR 0x52 // Adresse par défaut du VL53L1X Arduino
 #define VL53L1X_INT_PIN GPIO_NUM_13
 
 static uint8_t booted = 0;
@@ -23,6 +23,10 @@ inline void setupVL53L1XAndSleep()
             delay(2);
       }
       Serial.println("Capteur booté");
+      if (esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_EXT1)
+      {
+            VL53L1X_ClearInterrupt(VL53L1X_I2C_ADDR);
+      }
       VL53L1X_SensorInit(VL53L1X_I2C_ADDR);
       VL53L1X_SetDistanceMode(VL53L1X_I2C_ADDR, 1);
       VL53L1X_SetTimingBudgetInMs(VL53L1X_I2C_ADDR, 50);
@@ -47,47 +51,7 @@ inline void setupVL53L1XAndSleep()
       VL53L1X_StartRanging(VL53L1X_I2C_ADDR);
 
       // Mesure immédiate avant deep sleep
-      uint16_t distance = 0;
-      uint8_t dataReady = 0;
-      // Attendre que la mesure soit prête
-      while (dataReady == 0)
-      {
-            VL53L1X_CheckForDataReady(VL53L1X_I2C_ADDR, &dataReady);
-            delay(2);
-      }
-      VL53L1X_GetDistance(VL53L1X_I2C_ADDR, &distance);
-      VL53L1X_ClearInterrupt(VL53L1X_I2C_ADDR);
-      Serial.print("Distance initiale: ");
-      Serial.print(distance);
-      Serial.println(" mm");
-      // Tant qu'un objet est présent (< 500mm), on ne dort pas
-      while (distance < 500)
-      {
-            delay(100);
-            dataReady = 0;
-            while (dataReady == 0)
-            {
-                  VL53L1X_CheckForDataReady(VL53L1X_I2C_ADDR, &dataReady);
-                  delay(2);
-            }
-            VL53L1X_GetDistance(VL53L1X_I2C_ADDR, &distance);
-            VL53L1X_ClearInterrupt(VL53L1X_I2C_ADDR);
-            Serial.print("Distance: ");
-            Serial.print(distance);
-            Serial.println(" mm (attente objet parti)");
-      }
-
-      // Quand plus d'objet, on peut dormir
-      esp_sleep_enable_ext0_wakeup((gpio_num_t)VL53L1X_INT_PIN, 0); // wake on LOW
-      Serial.println("Mise en deep sleep, attente d'un objet...");
-      delay(100);
-      pinMode(13, INPUT);
-      while (digitalRead(13) == LOW)
-      {
-            Serial.println("Attente que l'interruption repasse à HIGH...");
-            delay(10);
-      }
-      esp_deep_sleep_start();
+      Serial.println("Capteur configuré");
 }
 
 #endif // VL53L1X_SLEEP_H

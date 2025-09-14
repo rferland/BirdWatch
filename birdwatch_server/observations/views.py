@@ -56,7 +56,7 @@ from .models import Observation
 
 
 # --- MJPEG Proxy mémoire pour multi-clients ---
-ESP32_STREAM_URL = "http://10.0.0.76:81/stream"
+ESP32_STREAM_URL = "http://192.168.4.1/stream"
 _mjpeg_clients = []  # List of queues for each client
 _mjpeg_lock = threading.Lock()
 
