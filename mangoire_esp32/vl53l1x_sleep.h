@@ -47,7 +47,7 @@ inline void setupVL53L1XAndSleep()
             Exemple pour réveil si objet détecté à moins de 50 cm :
             VL53L1X_SetDistanceThreshold(VL53L1X_I2C_ADDR, 0, 500, 2, 0);
       */
-      VL53L1X_SetDistanceThreshold(VL53L1X_I2C_ADDR, 0, 500, 2, 0);
+      VL53L1X_SetDistanceThreshold(VL53L1X_I2C_ADDR, 0, 500, BELOW, 0);
       VL53L1X_StartRanging(VL53L1X_I2C_ADDR);
 
       // Mesure immédiate avant deep sleep

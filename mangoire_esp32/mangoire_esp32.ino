@@ -241,6 +241,11 @@ void setup()
   catch (...)
   {
     Serial.println("Erreur lors de l'initialisation du VL53L1X (exception)");
+    while (Serial.read() == -1)
+    {
+      // Attente d'une touche
+      delay(10);
+    }
   }
 #endif
   Serial.println("Setup terminé!");
@@ -248,34 +253,37 @@ void setup()
 
 void checkVL53L1X()
 {
-  uint8_t dataReady = 0;
-
-  if (millis() - lastVL53Check > 1000)
-  { // toutes les secoondes
-    while (dataReady == 0)
-    {
-      VL53L1X_CheckForDataReady(VL53L1X_I2C_ADDR, &dataReady);
-      delay(2);
-    }
+  static uint8_t dataReady = 0;
+  static uint16_t distance = 0;
+  if (millis() - lastVL53Check > 1000) // toutes les secondes
+  {
+    Serial.println("Vérification VL53L1X");
     lastVL53Check = millis();
-    uint16_t distance = 0;
-    VL53L1X_GetDistance(VL53L1X_I2C_ADDR, &distance);
-
-    Serial.print("Distance initiale: ");
-    Serial.print(distance);
-    Serial.println(" mm");
-    if (distance < 500 && distance > 0)
+    VL53L1X_CheckForDataReady(VL53L1X_I2C_ADDR, &dataReady);
+    if (dataReady)
     {
-      Serial.print("Objet détecté à ");
+      dataReady = 0; // reset pour la prochaine mesure
+      VL53L1X_GetDistance(VL53L1X_I2C_ADDR, &distance);
+      Serial.print("Distance initiale: ");
       Serial.print(distance);
       Serial.println(" mm");
+      if (distance < 500 && distance > 0)
+      {
+        Serial.print("Objet détecté à ");
+        Serial.print(distance);
+        Serial.println(" mm");
+      }
+      else
+      {
+        Serial.println("Objet éloigné -> Going Deep Sleep");
+        VL53L1X_ClearInterrupt(VL53L1X_I2C_ADDR);
+        esp_sleep_enable_ext1_wakeup(1ULL << VL53L1X_INT_PIN, ESP_EXT1_WAKEUP_ALL_LOW);
+        esp_deep_sleep_start();
+      }
     }
     else
     {
-      Serial.println("Objet éloigné -> Deep Sleep");
-      // Ici, tu peux gérer l'interruption ou le deep sleep si besoin
-      esp_sleep_enable_ext1_wakeup(1ULL << VL53L1X_INT_PIN, ESP_EXT1_WAKEUP_ALL_LOW);
-      esp_deep_sleep_start();
+      Serial.println("Objet proche");
     }
   }
 }
